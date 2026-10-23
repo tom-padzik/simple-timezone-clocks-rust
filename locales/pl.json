@@ -35,6 +35,7 @@
   "new_clock": "Nowy zegar",
   "show_all": "Pokaż wszystkie",
   "hide_all": "Ukryj wszystkie",
+  "close_all": "Zamknij wszystkie i wyjdź",
   "tray_tooltip": "Zegary",
   "fallback_title": "Zegar",
   "am": "AM",

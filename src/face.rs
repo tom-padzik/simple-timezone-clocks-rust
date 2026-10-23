@@ -11,7 +11,7 @@ pub fn show_face(ui: &mut egui::Ui, config: &ClockConfig, civil: NaiveDateTime) 
     let font = font_color(ui, config);
     match config.face {
         FaceMode::Digital => {
-            let size = (width / 5.2).clamp(34.0, 96.0);
+            let size = digital_font_size(width, &time);
             ui.vertical_centered(|ui| {
                 ui.label(
                     RichText::new(time)
@@ -33,6 +33,17 @@ pub fn show_face(ui: &mut egui::Ui, config: &ClockConfig, civil: NaiveDateTime) 
             });
         }
     }
+}
+
+/// Font size that keeps the whole digital readout on one line.
+///
+/// The base assumes the eight glyphs of `12:34:56`. A 12-hour suffix adds three
+/// more, so the size follows the text length instead of letting the label wrap
+/// and push the info lines below out of a small window.
+fn digital_font_size(width: f32, text: &str) -> f32 {
+    const GLYPH_EM: f32 = 0.65;
+    let glyphs = text.chars().count().max(8) as f32;
+    (width / (glyphs * GLYPH_EM)).clamp(18.0, 96.0)
 }
 
 pub fn font_color(ui: &egui::Ui, config: &ClockConfig) -> Color32 {
@@ -154,4 +165,28 @@ fn polar(center: Pos2, length: f32, degrees_from_12: f32) -> Pos2 {
         center.x + length * radians.sin(),
         center.y - length * radians.cos(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::digital_font_size;
+
+    #[test]
+    fn a_long_readout_shrinks_to_stay_on_one_line() {
+        let width = 268.0;
+        let base = digital_font_size(width, "12:34:56");
+        let with_suffix = digital_font_size(width, "12:34:56 PM");
+        assert!(with_suffix < base);
+        // Hack advances roughly 0.6 em per glyph, so this must still fit.
+        assert!(0.6 * with_suffix * 11.0 <= width);
+    }
+
+    #[test]
+    fn short_readouts_keep_the_base_size() {
+        let width = 268.0;
+        assert_eq!(
+            digital_font_size(width, "09:51"),
+            digital_font_size(width, "12:34:56")
+        );
+    }
 }

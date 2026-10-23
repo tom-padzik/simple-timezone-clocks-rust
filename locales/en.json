@@ -35,6 +35,7 @@
   "new_clock": "New clock",
   "show_all": "Show all",
   "hide_all": "Hide all",
+  "close_all": "Close all and exit",
   "tray_tooltip": "Clocks",
   "fallback_title": "Clock",
   "am": "AM",

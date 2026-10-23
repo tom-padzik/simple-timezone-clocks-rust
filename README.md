@@ -4,7 +4,7 @@ A small Windows desktop clock you can keep on the desk. Open one window for the 
 
 ![Digital clocks for Warsaw and Miami, and an analog clock for Athens](docs/clocks.png)
 
-A new clock starts in this computer's time zone. It shows a large digital time, the date, the zone name, the UTC offset, and how far that zone is from this computer. A positive difference means the clock is ahead (`+1h`). `0h` means it matches this computer.
+A clock opened on its own starts in this computer's time zone. It shows a large digital time, the date, the zone name, the UTC offset, and how far that zone is from this computer. A positive difference means the clock is ahead (`+1h`). `0h` means it matches this computer.
 
 The window title is the city when you picked one, otherwise the time zone name (for example `Europe/Warsaw`).
 
@@ -32,7 +32,7 @@ Right-click a clock and choose **New clock**, or open the tray menu and choose *
 
 ![Tray menu listing the open clocks](docs/tray.png)
 
-Each new clock is another window, offset a little from the previous one, again set to this computer's time zone. Change the zone from that clock's settings.
+**New clock** in the tray opens in the middle of the screen, in this computer's time zone. **New clock** on a clock opens just above that one, stepped up and to the right, and starts with the same settings.
 
 ## Tray icon
 
@@ -41,6 +41,7 @@ Every running clock shares one tray icon. Left-click or right-click it to open t
 - A filled mark (`●`) means that clock is on screen. An empty mark (`○`) means it is hidden. Click a name to show or hide that window.
 - **Show all** brings every clock back.
 - **Hide all** hides every clock. The tray icon stays, so you can bring them back.
+- **Close all and exit** closes every clock, including hidden ones, and quits. The tray icon goes away.
 
 Minimizing a clock hides it the same way. It does not sit on the taskbar. Close the window with the title-bar button to quit that clock. When the last clock closes, the tray icon goes away too.
 
@@ -49,8 +50,8 @@ Minimizing a clock hides it the same way. It does not sit on the taskbar. Close 
 Right-click the clock face.
 
 - **Clock type** switches between **Digital** and **Analog**. The analog face still shows a small digital time under the dial. Switching face also resizes the window.
-- **Settings** opens the settings window.
-- **New clock** starts another clock.
+- **Settings** opens the settings window beside that clock.
+- **New clock** starts another clock just above this one, with the same settings.
 
 ![Settings for one clock](docs/settings.png)
 

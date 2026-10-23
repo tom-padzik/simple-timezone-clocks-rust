@@ -6,6 +6,7 @@ mod config;
 mod face;
 mod i18n;
 mod icon;
+mod place;
 mod search;
 mod store;
 mod tray;

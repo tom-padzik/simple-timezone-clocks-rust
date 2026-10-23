@@ -18,18 +18,25 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows::core::w;
 use windows::Win32::Foundation::{
-    GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, WAIT_ABANDONED,
-    WAIT_OBJECT_0, WPARAM,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, POINT,
+    WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
+};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, EnumWindows, GetPropW, GetWindowTextW, IsWindow, IsWindowVisible,
-    PeekMessageW, SetForegroundWindow, SetPropW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    TranslateMessage, GWL_EXSTYLE, MSG, PM_REMOVE, SC_MINIMIZE, SWP_FRAMECHANGED, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, WM_SYSCOMMAND, WS_EX_APPWINDOW,
-    WS_EX_TOOLWINDOW,
+    DispatchMessageW, EnumWindows, GetCursorPos, GetPropW, GetWindowTextW, IsWindow,
+    IsWindowVisible, PeekMessageW, PostMessageW, SetForegroundWindow, SetPropW, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE, MSG, PM_REMOVE, SC_MINIMIZE,
+    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, WM_CLOSE,
+    WM_SYSCOMMAND, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
+
+use crate::place::{self, Bounds};
 
 use crate::config::Language;
 use crate::i18n::tr;
@@ -63,7 +70,11 @@ pub fn hwnd_from_creation(cc: &eframe::CreationContext<'_>) -> Option<HWND> {
 
 pub fn tag_clock_window(hwnd: HWND) {
     unsafe {
-        let _ = SetPropW(hwnd, PROPERTY, Some(HANDLE(1 as *mut c_void)));
+        let _ = SetPropW(
+            hwnd,
+            PROPERTY,
+            Some(HANDLE(std::ptr::dangling_mut::<c_void>())),
+        );
         let _ = SetWindowSubclass(hwnd, Some(subclass_proc), 1, 0);
     }
 }
@@ -108,7 +119,7 @@ fn tray_loop(language: Arc<AtomicU8>, shutdown: Receiver<()>) {
                 signature = next;
                 if let Some(icon) = &icon {
                     let _ = icon.set_tooltip(Some(tr(lang, "tray_tooltip")));
-                    let _ = icon.set_menu(Some(Box::new(build_menu(lang, &clocks))));
+                    icon.set_menu(Some(Box::new(build_menu(lang, &clocks))));
                 }
             }
         } else if became_owner(mutex) {
@@ -123,10 +134,11 @@ fn tray_loop(language: Arc<AtomicU8>, shutdown: Receiver<()>) {
     }
 
     drop(icon);
-    if owner {
-        unsafe {
+    unsafe {
+        if owner {
             let _ = ReleaseMutex(mutex);
         }
+        let _ = CloseHandle(mutex);
     }
 }
 
@@ -191,6 +203,13 @@ fn build_menu(language: Language, clocks: &[ClockWindow]) -> Menu {
         true,
         None,
     ));
+    let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&MenuItem::with_id(
+        "close-all",
+        tr(language, "close_all"),
+        true,
+        None,
+    ));
     menu
 }
 
@@ -206,10 +225,92 @@ fn menu_signature(language: Language, clocks: &[ClockWindow]) -> String {
 }
 
 pub fn launch_new_clock() {
+    launch_process(std::iter::empty::<&str>());
+}
+
+/// Start a clock that copies `json`, a serialized [`crate::config::ClockConfig`].
+pub fn launch_inherited(json: &str) {
+    launch_process(["--clock", json]);
+}
+
+fn launch_process<I, S>(args: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let _ = std::process::Command::new(exe).spawn();
+    let _ = std::process::Command::new(exe).args(args).spawn();
+}
+
+/// Work area of the monitor under the cursor, in physical pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct PxRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+/// Center a window of `inner_width` by `inner_height` points on the monitor
+/// under the cursor. The cursor is where a tray-menu click just happened.
+pub fn center_on_cursor_monitor(inner_width: f32, inner_height: f32) -> Option<(f32, f32)> {
+    if inner_width <= 0.0 || inner_height <= 0.0 {
+        return None;
+    }
+    let mut point = POINT::default();
+    unsafe { GetCursorPos(&mut point).ok()? };
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    let work = monitor_work_px(monitor)?;
+    let scale = monitor_scale(monitor)?;
+    let bounds = Bounds {
+        x: work.left as f32 / scale,
+        y: work.top as f32 / scale,
+        width: (work.right - work.left) as f32 / scale,
+        height: (work.bottom - work.top) as f32 / scale,
+    };
+    Some(place::center(bounds, (inner_width, inner_height)))
+}
+
+/// Work area of the monitor that contains this clock, in physical pixels.
+pub fn window_work_px(hwnd_bits: isize) -> Option<PxRect> {
+    let hwnd = HWND(hwnd_bits as *mut c_void);
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    monitor_work_px(monitor)
+}
+
+fn monitor_work_px(monitor: HMONITOR) -> Option<PxRect> {
+    if monitor.is_invalid() {
+        return None;
+    }
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..MONITORINFO::default()
+    };
+    unsafe {
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+    }
+    Some(PxRect {
+        left: info.rcWork.left,
+        top: info.rcWork.top,
+        right: info.rcWork.right,
+        bottom: info.rcWork.bottom,
+    })
+}
+
+fn monitor_scale(monitor: HMONITOR) -> Option<f32> {
+    if monitor.is_invalid() {
+        return None;
+    }
+    let mut dpi_x = 0_u32;
+    let mut dpi_y = 0_u32;
+    unsafe {
+        GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).ok()?;
+    }
+    (dpi_x > 0).then_some(dpi_x as f32 / 96.0)
 }
 
 fn handle_menu(id: &str) {
@@ -223,6 +324,8 @@ fn handle_menu(id: &str) {
         for clock in enumerate_clocks() {
             set_visible(clock.hwnd, false);
         }
+    } else if id == "close-all" {
+        close_all();
     } else if let Some(value) = id.strip_prefix("toggle:") {
         if let Ok(hwnd) = value.parse::<isize>() {
             let visible = enumerate_clocks()
@@ -230,6 +333,17 @@ fn handle_menu(id: &str) {
                 .find(|clock| clock.hwnd == hwnd)
                 .is_some_and(|clock| clock.visible);
             set_visible(hwnd, !visible);
+        }
+    }
+}
+
+/// Ask every clock, including hidden ones, to close. Each process then exits,
+/// and the tray icon goes away with the last of them.
+fn close_all() {
+    for clock in enumerate_clocks() {
+        let hwnd = HWND(clock.hwnd as *mut c_void);
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
     }
 }

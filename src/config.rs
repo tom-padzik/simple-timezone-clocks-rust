@@ -49,8 +49,9 @@ pub enum ZoneChoice {
 
 /// Last known window rectangle, in logical points.
 ///
-/// Kept on the config so a future save can persist it. This version never
-/// writes it to disk.
+/// `x`/`y` come from the outer (frame) rectangle and `width`/`height` from the
+/// inner (client) rectangle. Kept on the config so a future save can persist
+/// it. This version never writes it to disk.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowRect {
     pub x: f32,
