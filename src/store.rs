@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use windows::core::w;
 use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{
-    CreateMutexW, ReleaseMutex, WaitForSingleObject, INFINITE,
+    CreateMutexW, ReleaseMutex, WaitForSingleObject,
 };
 
 use crate::config::ClockConfig;
@@ -159,8 +159,12 @@ pub fn user_session_path() -> PathBuf {
 }
 
 fn with_session_lock<T>(body: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
-    let mutex = unsafe { CreateMutexW(None, false, w!("Local\\ClocksSession")) }.map_err(|_| StoreError)?;
-    let status = unsafe { WaitForSingleObject(mutex, INFINITE) };
+    let mutex =
+        unsafe { CreateMutexW(None, false, w!("Local\\ClocksSession")) }.map_err(|_| StoreError)?;
+    // Bounded wait avoids a permanent hang if another process died mid-write or
+    // the tray thread and UI contended in the wrong order.
+    const LOCK_MS: u32 = 3_000;
+    let status = unsafe { WaitForSingleObject(mutex, LOCK_MS) };
     if status != WAIT_OBJECT_0 && status != windows::Win32::Foundation::WAIT_ABANDONED {
         let _ = unsafe { CloseHandle(mutex) };
         return Err(StoreError);

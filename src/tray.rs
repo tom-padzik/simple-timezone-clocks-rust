@@ -117,6 +117,11 @@ fn tray_loop(language: Arc<AtomicU8>, shutdown: Receiver<()>) {
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             handle_menu(&event.id.0);
         }
+        // Leave immediately after Close all: rebuilding the menu or touching the
+        // session file while WM_CLOSE is in flight can deadlock the last process.
+        if session_exit_requested() {
+            break;
+        }
         if owner {
             let clocks = enumerate_clocks();
             let closed = FileSessionStore::user()

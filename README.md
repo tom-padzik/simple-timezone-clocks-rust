@@ -50,6 +50,8 @@ Minimizing a clock hides it the same way. It does not sit on the taskbar. Close 
 
 Right-click the clock face.
 
+![Clock face menu with type, settings, new clock, and close all](docs/menu.png)
+
 - **Clock type** switches between **Digital** and **Analog**. The analog face still shows a small digital time under the dial. Switching face also resizes the window.
 - **Settings** opens the settings window beside that clock.
 - **New clock** starts another clock just above this one, with the same settings.

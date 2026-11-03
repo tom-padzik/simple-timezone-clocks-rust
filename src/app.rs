@@ -282,6 +282,9 @@ impl ClockApp {
             return;
         }
         self.session_written = true;
+        // Stop the tray thread before touching the session file. Otherwise the
+        // tray owner can hold Local\ClocksSession while we join it → hang on exit.
+        drop(self.tray.take());
         let store = FileSessionStore::user();
         if tray::session_exit_requested() {
             let _ = store.upsert_open(&self.config);
