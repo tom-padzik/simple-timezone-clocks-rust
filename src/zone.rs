@@ -171,6 +171,7 @@ pub fn default_config() -> ClockConfig {
         }
     };
     ClockConfig {
+        id: String::new(),
         zone,
         face: FaceMode::Digital,
         show_seconds: true,

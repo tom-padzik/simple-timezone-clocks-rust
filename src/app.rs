@@ -5,17 +5,20 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, FixedOffset, Timelike, Utc};
 use eframe::egui::{self, Align, Color32, Layout, RichText, ViewportCommand, WindowLevel};
 
-use crate::config::{ClockConfig, FaceMode, Language, ThemeMode};
+use crate::config::{new_clock_id, ClockConfig, FaceMode, Language, ThemeMode};
 use crate::face::{dial_color, font_color, second_hand_color, show_face};
 use crate::i18n::{format_clock_date, format_compared, tr};
 use crate::icon;
 use crate::place::{self, Bounds};
 use crate::search::{HitKind, SearchHit, ZoneIndex};
+use crate::store::FileSessionStore;
 use crate::tray::{self, TrayGuard};
 use crate::zone::{
     city_label, computer_offset_seconds, delta_seconds, format_delta, format_utc_label,
     window_title, zone_name, zone_offset_seconds,
 };
+
+const SESSION_SYNC_DELAY: Duration = Duration::from_millis(400);
 
 pub fn run() -> eframe::Result<()> {
     let launch = Launch::from_args();
@@ -75,29 +78,69 @@ struct Launch {
 
 impl Launch {
     fn from_args() -> Self {
-        Self::from_iter(std::env::args().skip(1))
+        if let Some(launch) = Self::from_clock_arg(std::env::args().skip(1)) {
+            return launch;
+        }
+        if !tray::any_clocks_running() {
+            if let Some(launch) = Self::restore_session() {
+                return launch;
+            }
+        }
+        Self::default_centered()
     }
 
+    #[cfg(test)]
     fn from_iter(args: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        Self::from_clock_arg(args).unwrap_or_else(Self::default_centered)
+    }
+
+    fn from_clock_arg(args: impl IntoIterator<Item = impl AsRef<str>>) -> Option<Self> {
         let mut args = args.into_iter();
-        if args
+        if !args
             .next()
             .as_ref()
             .is_some_and(|arg| arg.as_ref() == "--clock")
         {
-            if let Some(json) = args.next() {
-                if let Ok(config) = serde_json::from_str(json.as_ref()) {
-                    return Self {
-                        config,
-                        centered: false,
-                    };
-                }
-            }
+            return None;
         }
+        let json = args.next()?;
+        let mut config = serde_json::from_str::<ClockConfig>(json.as_ref()).ok()?;
+        config.ensure_id();
+        Some(Self {
+            config,
+            centered: false,
+        })
+    }
+
+    fn default_centered() -> Self {
+        let mut config = crate::zone::default_config();
+        config.ensure_id();
         Self {
-            config: crate::zone::default_config(),
+            config,
             centered: true,
         }
+    }
+
+    fn restore_session() -> Option<Self> {
+        let store = FileSessionStore::user();
+        let mut open = store.load().ok()?.open;
+        if open.is_empty() {
+            return None;
+        }
+        for config in &mut open {
+            config.ensure_id();
+        }
+        tray::fix_session_positions(&mut open);
+        let first = open.remove(0);
+        for config in open {
+            if let Ok(json) = serde_json::to_string(&config) {
+                tray::launch_inherited(&json);
+            }
+        }
+        Some(Self {
+            config: first,
+            centered: false,
+        })
     }
 }
 
@@ -119,6 +162,9 @@ struct ClockApp {
     spawned: u32,
     settings_placed: bool,
     settings_inner: Option<egui::Vec2>,
+    last_saved: Option<ClockConfig>,
+    dirty_since: Option<Instant>,
+    session_written: bool,
 }
 
 /// The computer's own UTC offset, refreshed at most every [`Self::REFRESH`].
@@ -147,7 +193,8 @@ impl ComputerOffset {
 }
 
 impl ClockApp {
-    fn new(cc: &eframe::CreationContext<'_>, config: ClockConfig) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, mut config: ClockConfig) -> Self {
+        config.ensure_id();
         let language_code = Arc::new(AtomicU8::new(config.language as u8));
         let hwnd = tray::hwnd_from_creation(cc).map(|hwnd| {
             tray::tag_clock_window(hwnd);
@@ -155,6 +202,8 @@ impl ClockApp {
         });
         let tray = hwnd.map(|_| tray::spawn(Arc::clone(&language_code)));
         let applied_face = config.face;
+        let store = FileSessionStore::user();
+        let _ = store.upsert_open(&config);
         Self {
             title: window_title(&config.zone),
             settings_open: false,
@@ -171,12 +220,16 @@ impl ClockApp {
             spawned: 0,
             settings_placed: false,
             settings_inner: None,
+            last_saved: Some(config.clone()),
+            dirty_since: None,
+            session_written: false,
             config,
         }
     }
 
     fn launch_child(&mut self, ctx: &egui::Context) {
         let mut child = self.config.clone();
+        child.id = new_clock_id();
         let min_size = clock_window_size(child.face);
         let inner = egui::vec2(
             child.window.width.max(min_size.x),
@@ -202,6 +255,38 @@ impl ClockApp {
         if let Ok(json) = serde_json::to_string(&child) {
             tray::launch_inherited(&json);
             self.spawned = step;
+        }
+    }
+
+    fn sync_session_if_needed(&mut self) {
+        if self.last_saved.as_ref() != Some(&self.config) {
+            if self.dirty_since.is_none() {
+                self.dirty_since = Some(Instant::now());
+            }
+        } else {
+            self.dirty_since = None;
+            return;
+        }
+        if self
+            .dirty_since
+            .is_some_and(|since| since.elapsed() >= SESSION_SYNC_DELAY)
+        {
+            let _ = FileSessionStore::user().upsert_open(&self.config);
+            self.last_saved = Some(self.config.clone());
+            self.dirty_since = None;
+        }
+    }
+
+    fn write_session_on_exit(&mut self) {
+        if self.session_written {
+            return;
+        }
+        self.session_written = true;
+        let store = FileSessionStore::user();
+        if tray::session_exit_requested() {
+            let _ = store.upsert_open(&self.config);
+        } else {
+            let _ = store.close_to_history(self.config.clone());
         }
     }
 
@@ -241,6 +326,10 @@ impl eframe::App for ClockApp {
         visuals.panel_fill.to_normalized_gamma_f32()
     }
 
+    fn on_exit(&mut self) {
+        self.write_session_on_exit();
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.language_code
             .store(self.config.language as u8, Ordering::Relaxed);
@@ -278,6 +367,10 @@ impl eframe::App for ClockApp {
                 self.config.window.y = rect.min.y;
             }
         });
+        if ctx.input(|input| input.viewport().close_requested()) {
+            self.write_session_on_exit();
+        }
+        self.sync_session_if_needed();
 
         let now = Utc::now();
         // Analog hands advance on every second even when the second hand is
@@ -341,6 +434,11 @@ impl eframe::App for ClockApp {
             if ui.button(tr(language, "new_clock")).clicked() {
                 let ctx = ui.ctx().clone();
                 self.launch_child(&ctx);
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(tr(language, "close_all")).clicked() {
+                tray::close_all_and_exit();
                 ui.close();
             }
         });
@@ -879,6 +977,7 @@ mod tests {
     #[test]
     fn a_clock_argument_keeps_the_inherited_settings() {
         let config = ClockConfig {
+            id: "test-clock".to_string(),
             zone: ZoneChoice::Fixed { seconds: 3600 },
             face: FaceMode::Analog,
             show_seconds: false,
@@ -909,5 +1008,6 @@ mod tests {
         let launch = Launch::from_iter(std::iter::empty::<&str>());
         assert!(launch.centered);
         assert!(launch.config.show_date);
+        assert!(!launch.config.id.is_empty());
     }
 }

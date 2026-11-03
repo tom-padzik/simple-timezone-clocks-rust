@@ -36,6 +36,8 @@
   "show_all": "Pokaż wszystkie",
   "hide_all": "Ukryj wszystkie",
   "close_all": "Zamknij wszystkie i wyjdź",
+  "closed_clocks": "Zamknięte zegary",
+  "closed_empty": "Brak",
   "tray_tooltip": "Zegary",
   "fallback_title": "Zegar",
   "am": "AM",

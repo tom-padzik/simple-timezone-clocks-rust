@@ -14,37 +14,43 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 use windows::core::w;
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, POINT,
+    CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT,
     WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST,
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HDC, HMONITOR,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
-use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
+use windows::Win32::System::Threading::{
+    CreateEventW, CreateMutexW, OpenEventW, ReleaseMutex, SetEvent, WaitForSingleObject,
+    EVENT_ALL_ACCESS,
+};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, EnumWindows, GetCursorPos, GetPropW, GetWindowTextW, IsWindow,
     IsWindowVisible, PeekMessageW, PostMessageW, SetForegroundWindow, SetPropW, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE, MSG, PM_REMOVE, SC_MINIMIZE,
-    SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, WM_CLOSE,
-    WM_SYSCOMMAND, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    SetWindowPos, ShowWindow, TranslateMessage, GWL_EXSTYLE, MONITORINFOF_PRIMARY, MSG, PM_REMOVE,
+    SC_MINIMIZE, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_RESTORE,
+    SW_SHOW, WM_CLOSE, WM_SYSCOMMAND, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
 };
 
-use crate::place::{self, Bounds};
-
-use crate::config::Language;
+use crate::config::{ClockConfig, Language};
 use crate::i18n::tr;
 use crate::icon;
+use crate::place::{self, Bounds};
+use crate::store::FileSessionStore;
+use crate::zone;
 
 const PROPERTY: windows::core::PCWSTR = w!("Clocks.Clock");
 const MUTEX_NAME: windows::core::PCWSTR = w!("Local\\ClocksTrayOwner");
+const SESSION_EXIT_EVENT: windows::core::PCWSTR = w!("Local\\ClocksSessionExit");
 const TRAY_GUID: u128 = 0xC10C_5017_4A2E_4B19_8C31_6D0A_7E4F_91B2;
+static SESSION_EXIT_LOCAL: AtomicU8 = AtomicU8::new(0);
 
 pub struct TrayGuard {
     shutdown: Option<Sender<()>>,
@@ -113,13 +119,16 @@ fn tray_loop(language: Arc<AtomicU8>, shutdown: Receiver<()>) {
         }
         if owner {
             let clocks = enumerate_clocks();
+            let closed = FileSessionStore::user()
+                .closed_list()
+                .unwrap_or_default();
             let lang = language_of(&language);
-            let next = menu_signature(lang, &clocks);
+            let next = menu_signature(lang, &clocks, &closed);
             if next != signature {
                 signature = next;
                 if let Some(icon) = &icon {
                     let _ = icon.set_tooltip(Some(tr(lang, "tray_tooltip")));
-                    icon.set_menu(Some(Box::new(build_menu(lang, &clocks))));
+                    icon.set_menu(Some(Box::new(build_menu(lang, &clocks, &closed))));
                 }
             }
         } else if became_owner(mutex) {
@@ -165,7 +174,7 @@ fn build_icon(language: Language) -> Option<TrayIcon> {
         .ok()
 }
 
-fn build_menu(language: Language, clocks: &[ClockWindow]) -> Menu {
+fn build_menu(language: Language, clocks: &[ClockWindow], closed: &[ClockConfig]) -> Menu {
     let menu = Menu::new();
     for clock in clocks {
         let mark = if clock.visible { "●" } else { "○" };
@@ -203,6 +212,33 @@ fn build_menu(language: Language, clocks: &[ClockWindow]) -> Menu {
         true,
         None,
     ));
+    let closed_menu = Submenu::new(tr(language, "closed_clocks"), true);
+    if closed.is_empty() {
+        let empty = MenuItem::with_id(
+            "closed-empty",
+            tr(language, "closed_empty"),
+            false,
+            None,
+        );
+        let _ = closed_menu.append(&empty);
+    } else {
+        for clock in closed {
+            let title = zone::window_title(&clock.zone);
+            let label = if title.is_empty() {
+                tr(language, "fallback_title")
+            } else {
+                title
+            };
+            let item = MenuItem::with_id(
+                format!("restore-closed:{}", clock.id),
+                label,
+                true,
+                None,
+            );
+            let _ = closed_menu.append(&item);
+        }
+    }
+    let _ = menu.append(&closed_menu);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&MenuItem::with_id(
         "close-all",
@@ -213,13 +249,16 @@ fn build_menu(language: Language, clocks: &[ClockWindow]) -> Menu {
     menu
 }
 
-fn menu_signature(language: Language, clocks: &[ClockWindow]) -> String {
+fn menu_signature(language: Language, clocks: &[ClockWindow], closed: &[ClockConfig]) -> String {
     let mut signature = format!("{language:?}");
     for clock in clocks {
         signature.push_str(&format!(
             "|{}:{}:{}",
             clock.hwnd, clock.visible, clock.title
         ));
+    }
+    for clock in closed {
+        signature.push_str(&format!("|c:{}", clock.id));
     }
     signature
 }
@@ -325,7 +364,9 @@ fn handle_menu(id: &str) {
             set_visible(clock.hwnd, false);
         }
     } else if id == "close-all" {
-        close_all();
+        close_all_and_exit();
+    } else if let Some(value) = id.strip_prefix("restore-closed:") {
+        restore_closed_clock(value);
     } else if let Some(value) = id.strip_prefix("toggle:") {
         if let Ok(hwnd) = value.parse::<isize>() {
             let visible = enumerate_clocks()
@@ -337,14 +378,174 @@ fn handle_menu(id: &str) {
     }
 }
 
-/// Ask every clock, including hidden ones, to close. Each process then exits,
-/// and the tray icon goes away with the last of them.
-fn close_all() {
+/// Mark a session exit and ask every clock, including hidden ones, to close.
+///
+/// Open clocks stay in the session file. Each process sees
+/// [`session_exit_requested`] and skips the closed-clock history.
+pub fn close_all_and_exit() {
+    begin_session_exit();
     for clock in enumerate_clocks() {
         let hwnd = HWND(clock.hwnd as *mut c_void);
         unsafe {
             let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
+    }
+}
+
+fn begin_session_exit() {
+    SESSION_EXIT_LOCAL.store(1, Ordering::SeqCst);
+    let Ok(handle) = (unsafe { CreateEventW(None, true, false, SESSION_EXIT_EVENT) }) else {
+        return;
+    };
+    let _ = unsafe { SetEvent(handle) };
+    // Do not CloseHandle: HANDLE is Copy and the named event must stay open
+    // so sibling processes can observe the signaled state.
+    let _ = handle;
+}
+
+/// True after [`close_all_and_exit`] until the last process exits.
+pub fn session_exit_requested() -> bool {
+    if SESSION_EXIT_LOCAL.load(Ordering::SeqCst) != 0 {
+        return true;
+    }
+    let Ok(handle) = (unsafe { OpenEventW(EVENT_ALL_ACCESS, false, SESSION_EXIT_EVENT) }) else {
+        return false;
+    };
+    let signaled = unsafe { WaitForSingleObject(handle, 0) } == WAIT_OBJECT_0;
+    let _ = unsafe { CloseHandle(handle) };
+    signaled
+}
+
+fn restore_closed_clock(id: &str) {
+    let store = FileSessionStore::user();
+    let Ok(Some(mut config)) = store.restore_closed(id) else {
+        return;
+    };
+    fix_closed_restore_position(&mut config);
+    if let Ok(json) = serde_json::to_string(&config) {
+        launch_inherited(&json);
+    }
+}
+
+/// True when at least one tagged clock window already exists.
+pub fn any_clocks_running() -> bool {
+    !enumerate_clocks().is_empty()
+}
+
+/// Work areas of every monitor, in logical points (physical / DPI scale).
+pub fn enum_work_areas() -> Vec<Bounds> {
+    let mut monitors: Vec<HMONITOR> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(monitor_enum_proc),
+            LPARAM(&mut monitors as *mut Vec<HMONITOR> as isize),
+        );
+    }
+    monitors
+        .into_iter()
+        .filter_map(|monitor| work_bounds_points(monitor))
+        .collect()
+}
+
+/// Primary monitor work area in logical points, or the first monitor found.
+pub fn primary_work_area() -> Option<Bounds> {
+    let mut monitors: Vec<(HMONITOR, bool)> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(
+            None,
+            None,
+            Some(monitor_enum_primary_proc),
+            LPARAM(&mut monitors as *mut Vec<(HMONITOR, bool)> as isize),
+        );
+    }
+    let primary = monitors
+        .iter()
+        .find(|(_, is_primary)| *is_primary)
+        .map(|(m, _)| *m)
+        .or_else(|| monitors.first().map(|(m, _)| *m))?;
+    work_bounds_points(primary)
+}
+
+fn work_bounds_points(monitor: HMONITOR) -> Option<Bounds> {
+    let work = monitor_work_px(monitor)?;
+    let scale = monitor_scale(monitor)?;
+    Some(Bounds {
+        x: work.left as f32 / scale,
+        y: work.top as f32 / scale,
+        width: (work.right - work.left) as f32 / scale,
+        height: (work.bottom - work.top) as f32 / scale,
+    })
+}
+
+unsafe extern "system" fn monitor_enum_proc(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    lparam: LPARAM,
+) -> windows::core::BOOL {
+    let monitors = unsafe { &mut *(lparam.0 as *mut Vec<HMONITOR>) };
+    monitors.push(monitor);
+    true.into()
+}
+
+unsafe extern "system" fn monitor_enum_primary_proc(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    lparam: LPARAM,
+) -> windows::core::BOOL {
+    let monitors = unsafe { &mut *(lparam.0 as *mut Vec<(HMONITOR, bool)>) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..MONITORINFO::default()
+    };
+    let primary = unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() }
+        && (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
+    monitors.push((monitor, primary));
+    true.into()
+}
+
+fn fix_closed_restore_position(config: &mut ClockConfig) {
+    let works = enum_work_areas();
+    let Some(primary) = primary_work_area() else {
+        return;
+    };
+    let size = outer_size(config);
+    let origin = (config.window.x, config.window.y);
+    if place::is_placeable(origin, size, &works) {
+        return;
+    }
+    let (x, y) = place::cascade_from_top_right(primary, size, 0);
+    config.window.x = x;
+    config.window.y = y;
+}
+
+fn outer_size(config: &ClockConfig) -> (f32, f32) {
+    (
+        config.window.width.max(50.0),
+        (config.window.height + 40.0).max(50.0),
+    )
+}
+
+/// Move off-screen session clocks into a top-left cascade on the primary work area.
+pub fn fix_session_positions(configs: &mut [ClockConfig]) {
+    let works = enum_work_areas();
+    let Some(primary) = primary_work_area() else {
+        return;
+    };
+    let mut cascade = 0_u32;
+    for config in configs {
+        let size = outer_size(config);
+        let origin = (config.window.x, config.window.y);
+        if place::is_placeable(origin, size, &works) {
+            continue;
+        }
+        let (x, y) = place::cascade_from_top_left(primary, size, cascade);
+        config.window.x = x;
+        config.window.y = y;
+        cascade = cascade.saturating_add(1);
     }
 }
 

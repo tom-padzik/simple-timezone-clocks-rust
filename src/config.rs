@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
 
 /// How the time is drawn. Analog mode still shows a small digital readout.
@@ -50,8 +53,8 @@ pub enum ZoneChoice {
 /// Last known window rectangle, in logical points.
 ///
 /// `x`/`y` come from the outer (frame) rectangle and `width`/`height` from the
-/// inner (client) rectangle. Kept on the config so a future save can persist
-/// it. This version never writes it to disk.
+/// inner (client) rectangle. Persisted with the rest of [`ClockConfig`] in the
+/// session file.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowRect {
     pub x: f32,
@@ -74,6 +77,9 @@ impl Default for WindowRect {
 /// Entire state of one clock. The window reads and writes only this struct.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClockConfig {
+    /// Stable instance id used in the session file. Empty until [`Self::ensure_id`].
+    #[serde(default)]
+    pub id: String,
     pub zone: ZoneChoice,
     pub face: FaceMode,
     pub show_seconds: bool,
@@ -92,6 +98,26 @@ pub struct ClockConfig {
     pub window: WindowRect,
 }
 
+impl ClockConfig {
+    /// Fill [`Self::id`] when it is still empty.
+    pub fn ensure_id(&mut self) {
+        if self.id.is_empty() {
+            self.id = new_clock_id();
+        }
+    }
+}
+
+/// Unique enough for open/closed rows in one user's session file.
+pub fn new_clock_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{millis}-{n}", std::process::id())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +125,7 @@ mod tests {
     #[test]
     fn config_roundtrips_through_json() {
         let config = ClockConfig {
+            id: "abc".to_string(),
             zone: ZoneChoice::Iana {
                 id: "Europe/Warsaw".to_string(),
                 city: Some("Warszawa".to_string()),
@@ -124,5 +151,28 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let back: ClockConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config, back);
+    }
+
+    #[test]
+    fn missing_id_deserializes_empty_then_ensure_fills() {
+        let json = r#"{
+            "zone":{"kind":"fixed","seconds":0},
+            "face":"digital",
+            "show_seconds":true,
+            "show_date":true,
+            "hour24":true,
+            "always_on_top":false,
+            "theme":"system",
+            "language":"en",
+            "background":null,
+            "font_color":null,
+            "dial_color":null,
+            "second_hand_color":null,
+            "window":{"x":1.0,"y":2.0,"width":3.0,"height":4.0}
+        }"#;
+        let mut config: ClockConfig = serde_json::from_str(json).unwrap();
+        assert!(config.id.is_empty());
+        config.ensure_id();
+        assert!(!config.id.is_empty());
     }
 }

@@ -41,9 +41,10 @@ Every running clock shares one tray icon. Left-click or right-click it to open t
 - A filled mark (`●`) means that clock is on screen. An empty mark (`○`) means it is hidden. Click a name to show or hide that window.
 - **Show all** brings every clock back.
 - **Hide all** hides every clock. The tray icon stays, so you can bring them back.
-- **Close all and exit** closes every clock, including hidden ones, and quits. The tray icon goes away.
+- **Closed clocks** lists up to the last ten clocks you closed with the window close button. Choose one to open it again with its settings and position.
+- **Close all and exit** closes every clock, including hidden ones, and quits. The tray icon goes away. Open clocks are saved and restored the next time you start the program.
 
-Minimizing a clock hides it the same way. It does not sit on the taskbar. Close the window with the title-bar button to quit that clock. When the last clock closes, the tray icon goes away too.
+Minimizing a clock hides it the same way. It does not sit on the taskbar. Close the window with the title-bar button to quit that clock; it is kept under **Closed clocks**. When the last clock closes, the tray icon goes away too.
 
 ## Change a clock
 
@@ -52,6 +53,7 @@ Right-click the clock face.
 - **Clock type** switches between **Digital** and **Analog**. The analog face still shows a small digital time under the dial. Switching face also resizes the window.
 - **Settings** opens the settings window beside that clock.
 - **New clock** starts another clock just above this one, with the same settings.
+- **Close all and exit** does the same as the tray item: saves the open clocks and quits.
 
 ![Settings for one clock](docs/settings.png)
 
@@ -65,4 +67,10 @@ In settings you can:
 - Set the language to English or Polish. That clock's menus follow the choice.
 - Pick a background, font color, dial and hands color, and second-hand color. Each color can be set back to the automatic one.
 
-Settings last only while that clock is open. Closing it forgets them.
+## Saved session
+
+Settings, window size, and position are written to `%LOCALAPPDATA%\Clocks\session.json` while clocks run.
+
+- **Close all and exit** keeps the open clocks in that file. The next launch restores them.
+- Closing a clock with the title-bar button moves it into a **Closed clocks** history (up to ten). You can reopen one from the tray while any clock is still running.
+- If a saved position falls outside the current screen layout (for example after a resolution change), session restore places those windows in a cascade from the top-left of the primary work area. A clock restored from **Closed clocks** uses a cascade from the top-right instead.

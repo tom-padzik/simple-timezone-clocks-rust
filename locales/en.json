@@ -36,6 +36,8 @@
   "show_all": "Show all",
   "hide_all": "Hide all",
   "close_all": "Close all and exit",
+  "closed_clocks": "Closed clocks",
+  "closed_empty": "None",
   "tray_tooltip": "Clocks",
   "fallback_title": "Clock",
   "am": "AM",

@@ -71,6 +71,29 @@ fn clamp_inside(origin: (f32, f32), window: (f32, f32), work: Bounds) -> (f32, f
     (origin.0.clamp(work.x, max_x), origin.1.clamp(work.y, max_y))
 }
 
+/// True when the outer top-left and size fit entirely inside at least one work area.
+pub fn is_placeable(origin: (f32, f32), window: (f32, f32), works: &[Bounds]) -> bool {
+    works.iter().any(|work| {
+        origin.0 >= work.x
+            && origin.1 >= work.y
+            && origin.0 + window.0 <= work.max_x() + 0.5
+            && origin.1 + window.1 <= work.max_y() + 0.5
+    })
+}
+
+/// Cascade from the top-left of `work` so restored windows are not fully stacked.
+pub fn cascade_from_top_left(work: Bounds, window: (f32, f32), index: u32) -> (f32, f32) {
+    let step = CASCADE_STEP * index as f32;
+    clamp_inside((work.x + step, work.y + step), window, work)
+}
+
+/// Cascade from the top-right of `work` (used when reopening a closed clock).
+pub fn cascade_from_top_right(work: Bounds, window: (f32, f32), index: u32) -> (f32, f32) {
+    let step = CASCADE_STEP * index as f32;
+    let x = work.max_x() - window.0 - step;
+    clamp_inside((x, work.y + step), window, work)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,5 +175,27 @@ mod tests {
             height: 1000.0,
         };
         assert_eq!(center(area, (300.0, 220.0)), (2570.0, 430.0));
+    }
+
+    #[test]
+    fn placeable_requires_a_full_fit_in_some_work_area() {
+        let works = [work()];
+        assert!(is_placeable((100.0, 100.0), (300.0, 220.0), &works));
+        assert!(!is_placeable((1800.0, 100.0), (300.0, 220.0), &works));
+        assert!(!is_placeable((-50.0, 100.0), (300.0, 220.0), &works));
+    }
+
+    #[test]
+    fn top_left_cascade_steps_diagonally() {
+        let child = (300.0, 220.0);
+        assert_eq!(cascade_from_top_left(work(), child, 0), (0.0, 0.0));
+        assert_eq!(cascade_from_top_left(work(), child, 2), (64.0, 64.0));
+    }
+
+    #[test]
+    fn top_right_cascade_steps_inward_from_the_right() {
+        let child = (300.0, 220.0);
+        assert_eq!(cascade_from_top_right(work(), child, 0), (1620.0, 0.0));
+        assert_eq!(cascade_from_top_right(work(), child, 1), (1588.0, 32.0));
     }
 }
