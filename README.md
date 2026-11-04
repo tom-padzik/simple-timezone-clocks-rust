@@ -8,7 +8,13 @@ A clock opened on its own starts in this computer's time zone. It shows a large 
 
 The window title is the city when you picked one, otherwise the time zone name (for example `Europe/Warsaw`).
 
-## Run
+## Portable
+
+This is a portable Windows program. `clocks.exe` is the whole application: cities, time zones, translations, and the icon are compiled into that one file. Copy it to any writable folder, including a USB drive. There is no installer, and the program does not write under `%LOCALAPPDATA%`.
+
+On a normal Windows 10 or 11 PC you do not need extra libraries next to the executable. The first launch creates `session.json` in the same folder. That file stores the open clocks and the list of recently closed ones. To keep those clocks, move `session.json` together with `clocks.exe`.
+
+## Build from source
 
 You need [Rust](https://rustup.rs/) on Windows.
 
@@ -22,7 +28,7 @@ A release build:
 cargo build --release
 ```
 
-The program is `target\release\clocks.exe`.
+The program is `target\release\clocks.exe`. Copy that file out of `target` and run it from a folder you can write to. While you use `cargo run`, the session file is `target\debug\session.json`.
 
 The interface follows the Windows display language: Polish if Windows is set to Polish, English otherwise. You can switch a clock later in its settings.
 
@@ -71,7 +77,7 @@ In settings you can:
 
 ## Saved session
 
-Settings, window size, and position are written to `%LOCALAPPDATA%\Clocks\session.json` while clocks run.
+Settings, window size, and position are written to `session.json` beside `clocks.exe` while clocks run. The folder must be writable. Nothing is stored in the user profile.
 
 - **Close all and exit** keeps the open clocks in that file. The next launch restores them.
 - Closing a clock with the title-bar button moves it into a **Closed clocks** history (up to ten). You can reopen one from the tray while any clock is still running.

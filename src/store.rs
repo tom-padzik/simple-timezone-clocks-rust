@@ -1,4 +1,4 @@
-//! Session file under `%LOCALAPPDATA%\Clocks\session.json`.
+//! Session file `session.json` in the directory that contains `clocks.exe`.
 //!
 //! Every clock process upserts its [`ClockConfig`] into `open`. Closing one
 //! window moves it to `closed` (newest first, capped at 10). **Close all and
@@ -152,10 +152,17 @@ impl FileSessionStore {
 }
 
 pub fn user_session_path() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join("Clocks").join("session.json")
+    exe_dir().join("session.json")
+}
+
+/// Directory of the running executable, so a copied `clocks.exe` keeps its
+/// session beside itself.
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.to_path_buf()))
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn with_session_lock<T>(body: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
@@ -249,6 +256,14 @@ mod tests {
         assert!(state.closed.iter().all(|c| c.id != "gone"));
         assert!(state.open.iter().any(|c| c.id == "gone"));
         let _ = fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn user_session_path_sits_beside_the_executable() {
+        let path = user_session_path();
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("session.json"));
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(path.parent(), exe.parent());
     }
 
     #[test]
